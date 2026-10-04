@@ -57,7 +57,10 @@ pip install "dionw @ git+https://github.com/JTriggerFish/dionw"
 
 Requirements: PyTorch 2.13 or newer, a CUDA GPU, and Triton (included in
 PyTorch's Linux CUDA wheels). Tested on Blackwell (RTX 5090, RTX PRO 6000), Ada
-Lovelace (RTX 4090) and Hopper (GH200, aarch64) GPUs.
+Lovelace (RTX 4090) and Hopper (GH200, aarch64) GPUs with PyTorch 2.13.0
+(Triton 3.7.1), where all timings in this README were measured. Compatible
+with PyTorch 2.14.1 (Triton 3.8.0): the test suite, timing tests aside, passes
+on an RTX 5090.
 
 ## Quick start
 
