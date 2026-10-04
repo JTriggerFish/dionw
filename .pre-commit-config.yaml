@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: debug-statements
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+  # ty needs torch to resolve types: it runs from the project venv
+  # (pip install -e . --group dev), on the whole project.
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        entry: .venv/bin/ty check src tests bench
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        always_run: true

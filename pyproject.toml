@@ -1,0 +1,104 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dionw"
+version = "0.1.0"
+description = "Single-GPU Dion (row-selected NorMuon) for matrices and AdamW for everything else, one AdamW-equivalent learning rate, with an optimizer-integrated EMA."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "JTriggerFish" }]
+keywords = ["optimizer", "pytorch", "muon", "dion", "normuon", "adamw", "ema"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+# Tested with torch 2.13 (private APIs: torch._fused_adamw_, torch._foreach_*,
+# torch._dynamo.maybe_mark_dynamic). Triton comes with torch's Linux CUDA wheels,
+# pinned by torch itself.
+dependencies = ["torch>=2.13"]
+
+# Development only (PEP 735): not part of the published metadata, so the direct
+# git reference below does not block a PyPI upload.
+[dependency-groups]
+test = [
+    "pytest>=8",
+    "numpy",
+    # microsoft/dion has no PyPI release: the parity tests' reference.
+    "dion @ git+https://github.com/microsoft/dion.git@7692479288f928a3d61d1cc58137b4dbe4f71000",
+    # Dao-AILab's Gram Newton-Schulz: the Gram tests' reference (its PyTorch
+    # backend, which runs on any GPU); the version microsoft/dion pins.
+    "gram-newton-schulz==0.1.6",
+]
+dev = ["ruff==0.16.10", "ty==0.0.84", "pre-commit>=4"]
+
+[project.urls]
+Repository = "https://github.com/JTriggerFish/dionw"
+
+[tool.ty.environment]
+python = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The repository root, so tests import the benchmarks as `bench.*`.
+pythonpath = ["."]
+markers = [
+    "slow: compile-heavy tests (>= ~8 s); skipped by default",
+    "bench: performance claims, timed on an idle GPU; skipped by default",
+]
+addopts = "-m 'not slow and not bench'"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src", "tests", "."]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "TC", "RUF", "PTH", "ERA",
+    "PL", "PERF", "PIE", "RET", "ARG", "BLE", "T20", "C90",
+    "D",    # docstrings (Google convention)
+    "ANN",  # annotations everywhere
+    "PT",   # pytest style
+]
+ignore = [
+    "E501",     # line length: the formatter's job
+    "PLR2004",  # numeric constants inline
+    "PLC0415",  # imports inside functions (none today; allowed for lazy imports)
+    "ANN401",   # Any: torch param-group dicts are dict[str, Any]
+    "D105",     # magic methods
+    "D107",     # __init__ documented on the class or method signature
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.pylint]
+max-args = 10
+max-statements = 30
+max-branches = 10
+max-returns = 8
+
+[tool.ruff.lint.per-file-ignores]
+# Triton kernel arguments are DSL values (pointers, constexprs), not Python types.
+# They are copied from microsoft/dion unchanged: one positional argument per
+# pointer, stride and tile size.
+"src/dionw/_symmetric_kernels.py" = ["ANN001", "ANN202", "N803", "N806", "PLR0913", "PLR0915", "PLR0917"]
+"src/dionw/_momentum_kernels.py" = ["ANN001", "ANN202", "N803", "PLR0917"]
+"tests/*" = ["D103", "PLR0917"]
+"bench/*" = ["T20", "D103"]

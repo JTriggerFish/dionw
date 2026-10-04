@@ -1,0 +1,27 @@
+name: lint
+
+# Hygiene, formatting, lint and types. The tests need a CUDA GPU and run
+# locally (pytest -m "" on a GPU machine); see README.md.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # The tested stack: type stubs change between Triton releases, so lint
+      # runs against the versions the GPU tests use (Triton as pinned by torch).
+      - name: Install (CPU torch is enough for types)
+        run: |
+          uv venv --python 3.12
+          uv pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0"
+          uv pip install "triton==3.7.1"  # CPU torch does not bring it
+          uv pip install -e . --group test --group dev
+      - name: pre-commit (hygiene, ruff, ty)
+        run: uv run --no-sync pre-commit run --all-files --show-diff-on-failure
