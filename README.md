@@ -268,6 +268,34 @@ class PatchEmbed(nn.Module):
 Routes can also be passed to `param_groups` as `routes={param: Route(...)}`.
 Conflicting declarations raise an error.
 
+**Fused projections.** A weight that stacks several functionally distinct maps
+should be orthogonalized per map, not as one matrix: fused QKV (per head, as
+above), cross-attention KV, AdaLN/FiLM modulation (shift, scale and gate for
+each sublayer) and the value and gate halves of a gated FFN. Orthogonalized
+whole, the maps share one set of singular directions and one update budget,
+which couples maps of very different scale; CMuon reports slower late-stage
+convergence for fused AdaLN and QKV weights in DiTs and recovers it by chunking
+them [[10]](#references). `num_heads=k` splits the rows into `k` equal
+contiguous blocks, so it fits maps stacked along dim 0 in equal sizes:
+
+```python
+class Modulation(nn.Module):
+    def dion_routes(self):
+        # shift/scale/gate for attention and MLP: six maps stacked as row blocks.
+        return ((self.proj.weight, Route(RouteKind.MATRIX, num_heads=6)),)
+
+
+class GatedMLP(nn.Module):
+    def dion_routes(self):
+        # [value; gate] halves of a SwiGLU up-projection.
+        return ((self.w12.weight, Route(RouteKind.MATRIX, num_heads=2)),)
+```
+
+Interleaved layouts (maps alternating row by row, or per-head QKV stored as
+`[q0, k0, v0, q1, ...]` with unequal sizes) do not match the contiguous split;
+reorder them or keep separate weights. Each block is narrower than the fused
+weight, so it can fall under `selection_min_dim` and update every row.
+
 **Weight decay.** By default vectors, learned tokens and embedding-like names
 are exempt. `no_weight_decay=[...]` replaces that rule with an exact list.
 Exempt groups carry `weight_decay=0.0`. Decayed groups inherit the optimizer's
@@ -302,6 +330,18 @@ optimizer.restore_non_ema_weights()
   swapped in, raises an error.
 - **Every parameter has a shadow,** including ones that have not received a
   gradient yet.
+- **EMA and weight decay.** With decoupled decay, a matrix's norm settles where
+  decay balances the fixed-size updates, and from then on each step rotates it
+  by about `sqrt(2 * lr * weight_decay)` radians (rotational equilibrium,
+  Kosson et al. [[11]](#references)); the norm approaches that equilibrium with
+  a time constant of `1 / (2 * lr * weight_decay)` steps. An EMA averages
+  weights along that rotation, so a long horizon on fast-rotating weights
+  averages directions, not just noise: the average can match the live weights'
+  loss yet respond less to its inputs (a smoother function), which
+  deterministic diffusion samplers turn into lost detail. Keep the rotation
+  accumulated over the EMA's mean lag, about
+  `sqrt(2 * lr * weight_decay * lag)` radians, small: shorten the horizon or
+  lower `lr * weight_decay`.
 - **Schedule options:** `update_every_n_steps` applies `decay ** n` every n
   steps, `start_step` delays the start, and `decay_final` with
   `decay_ramp_steps` ramps the decay linearly.
@@ -323,6 +363,35 @@ Same-shape blocks of a group share one momentum buffer, and `state[p]` holds
 views into it. `torch.save` keeps that sharing, so checkpoints are not
 inflated. Formats that reject shared storage, such as safetensors, need the
 views cloned first.
+
+**Changing routes on resume.** Per-parameter state does not depend on the
+route's head split or row fraction: momentum has the parameter's shape and the
+variance one entry per row. A run can therefore move to a new layout (for
+example, splitting a fused projection) by building the new groups and mapping
+the saved state by parameter. Replay the saved run's `param_groups` call (same
+model and arguments, old routes) to recover which parameter each saved index
+belongs to, then write the saved entries under the new optimizer's indices:
+
+```python
+old = dionw.param_groups(model, routes=old_routes, ...).groups   # saved layout
+saved_index = {id(p): i for i, p in enumerate(p for g in old for p in g["params"])}
+new_groups = optimizer.param_groups                                # new layout
+state = optimizer_state_dict  # as saved
+remapped = {
+    **state,
+    "param_groups": [
+        {**{k: v for k, v in g.items() if k != "params"},
+         "params": [saved_index[id(p)] for p in g["params"]]}
+        for g in new_groups
+    ],
+}
+optimizer.load_state_dict(remapped)
+```
+
+The groups and their hyperparameters are the new optimizer's; every
+parameter keeps its momentum, variance, AdamW moments and EMA shadow. An LR
+scheduler saved with one entry per group needs its per-group lists resized to
+the new group count.
 
 `add_param_group` works at any point. Matrix state is repacked on the next
 step. `initialize_state(param)` creates a parameter's state before its first
@@ -438,6 +507,16 @@ The following design choices would benefit from external review:
   outside the VAE and diffusion models it has been tested on?
 - **Stale variance.** Rows that go unselected for many steps keep an old
   NorMuon variance. microsoft/dion behaves the same way.
+- **Matrices with low-rank inputs.** A modulation layer driven only by a
+  timestep embedding sees inputs that span a few directions over the batch,
+  and its gradient is nearly that low-rank. Orthogonalization lifts the weak
+  directions of the update to full size, so most of the weight's energy can end
+  up in input directions it barely uses (an effective rank far above the
+  input's). The layer's output is barely affected, but those directions rotate
+  with every step. A narrow
+  conditioning input (a few dozen dimensions) avoids it by construction; is
+  routing such layers to AdamW, or projecting their updates onto the input's
+  span, better?
 
 ## Development
 
@@ -482,6 +561,12 @@ PyTorch backend, which runs on any GPU) for the Gram tests.
 9. W. Peebles, S. Xie. *Scalable Diffusion Models with Transformers.* 2022.
    [arXiv:2212.09748](https://arxiv.org/abs/2212.09748) (the DiT-XL shapes in
    `bench/static_vs_dynamic.py` and `bench/newton_schulz.py`)
+10. *CMuon: Accelerating and Stabilizing Diffusion Transformer Training via
+    Chunked Momentum Orthogonalization.* 2026.
+    [arXiv:2608.02502](https://arxiv.org/abs/2608.02502)
+11. A. Kosson, B. Messmer, M. Jaggi. *Rotational Equilibrium: How Weight Decay
+    Balances Learning Across Neural Networks.* 2024.
+    [arXiv:2305.17212](https://arxiv.org/abs/2305.17212)
 
 ## License
 
