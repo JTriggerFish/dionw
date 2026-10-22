@@ -270,26 +270,40 @@ Conflicting declarations raise an error.
 
 **Fused projections.** A weight that stacks several functionally distinct maps
 should be orthogonalized per map, not as one matrix: fused QKV (per head, as
-above), cross-attention KV, AdaLN/FiLM modulation (shift, scale and gate for
-each sublayer) and the value and gate halves of a gated FFN. Orthogonalized
-whole, the maps share one set of singular directions and one update budget,
-which couples maps of very different scale; CMuon reports slower late-stage
-convergence for fused AdaLN and QKV weights in DiTs and recovers it by chunking
-them [[10]](#references). `num_heads=k` splits the rows into `k` equal
-contiguous blocks, so it fits maps stacked along dim 0 in equal sizes:
+above), cross-attention KV, the value and gate halves of a gated FFN, and
+FiLM-style modulation whose input carries per-token or otherwise high-rank
+features. Orthogonalized whole, the maps share one set of singular directions
+and one update budget, which couples maps of very different scale; CMuon reports
+slower late-stage convergence for fused AdaLN and QKV weights in DiTs and
+recovers it by chunking them [[10]](#references). `num_heads=k` splits the rows
+into `k` equal contiguous blocks, so it fits maps stacked along dim 0 in equal
+sizes:
 
 ```python
-class Modulation(nn.Module):
-    def dion_routes(self):
-        # shift/scale/gate for attention and MLP: six maps stacked as row blocks.
-        return ((self.proj.weight, Route(RouteKind.MATRIX, num_heads=6)),)
-
-
 class GatedMLP(nn.Module):
     def dion_routes(self):
         # [value; gate] halves of a SwiGLU up-projection.
         return ((self.w12.weight, Route(RouteKind.MATRIX, num_heads=2)),)
 ```
+
+**Modulation from a timestep or class embedding goes to AdamW.** AdaLN-style
+projections whose only input is a timestep (or class) embedding see inputs that
+span a few directions, so their gradients are nearly that low-rank, and an
+orthogonalized update lifts the weak directions to full size (see
+[Low-rank inputs](#low-rank-inputs)). Route them to AdamW, without weight decay,
+instead of splitting them; hybrid Muon–AdamW DiT recipes such as MOSS-Image's
+exclude modulation projections from Muon too:
+
+```python
+class Modulation(nn.Module):
+    def dion_routes(self):
+        # shift/scale/gate maps driven by a timestep embedding: AdamW, whole.
+        return ((self.proj.weight, Route(RouteKind.ADAMW)),)
+```
+
+Weight decay on these weights does little either way at diffusion learning
+rates (a time constant of order 1/(lr·wd), millions of steps), so keep them
+in the no-decay group.
 
 Interleaved layouts (maps alternating row by row, or per-head QKV stored as
 `[q0, k0, v0, q1, ...]` with unequal sizes) do not match the contiguous split;
@@ -494,6 +508,22 @@ The compiled functions use one static graph per block shape: on DiT-XL-like
 default recompile limit of 8, so Dion raises the limit around its own compiled
 calls only; the global setting is left unchanged.
 
+### Low-rank inputs
+
+A modulation layer driven only by a timestep embedding sees inputs that span a
+few directions over the batch, and its gradient is nearly that low-rank.
+Newton–Schulz polynomials push every singular value toward one, including the
+weak directions (the embedding's low-energy tail, rounding noise, momentum
+residue), so the update spends a full-size step on input directions the layer
+barely uses. Measured on a DiT trained this way, the timestep embedding held
+99% of its energy in 3 of 256 directions, yet about 90% of each modulation
+weight's squared norm lay outside the top 4 input directions, and through the
+embedding's weak tail that part produced 2–3% of the modulation: a smooth
+function of t the network adapts to, not per-sample noise, but a costly use of
+the update and a source of extra rotation. Under AdamW the
+same layers keep the low-rank shape of their gradients. Hence the routing
+advice under [Fused projections](#routing).
+
 ## Open questions
 
 The following design choices would benefit from external review:
@@ -507,16 +537,6 @@ The following design choices would benefit from external review:
   outside the VAE and diffusion models it has been tested on?
 - **Stale variance.** Rows that go unselected for many steps keep an old
   NorMuon variance. microsoft/dion behaves the same way.
-- **Matrices with low-rank inputs.** A modulation layer driven only by a
-  timestep embedding sees inputs that span a few directions over the batch,
-  and its gradient is nearly that low-rank. Orthogonalization lifts the weak
-  directions of the update to full size, so most of the weight's energy can end
-  up in input directions it barely uses (an effective rank far above the
-  input's). The layer's output is barely affected, but those directions rotate
-  with every step. A narrow
-  conditioning input (a few dozen dimensions) avoids it by construction; is
-  routing such layers to AdamW, or projecting their updates onto the input's
-  span, better?
 
 ## Development
 
