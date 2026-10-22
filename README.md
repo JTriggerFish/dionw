@@ -288,7 +288,8 @@ class GatedMLP(nn.Module):
 
 **Modulation from a timestep or class embedding goes to AdamW.** AdaLN-style
 projections whose only input is a timestep (or class) embedding see inputs that
-span a few directions, so their gradients are nearly that low-rank, and an
+lie on a low-dimensional curve (or a small set of points), often concentrated in
+a few directions, so their gradients can be nearly that low-rank, and an
 orthogonalized update lifts the weak directions to full size (see
 [Low-rank inputs](#low-rank-inputs)). Route them to AdamW, without weight decay,
 instead of splitting them; hybrid Muon–AdamW DiT recipes such as MOSS-Image's
@@ -510,8 +511,10 @@ calls only; the global setting is left unchanged.
 
 ### Low-rank inputs
 
-A modulation layer driven only by a timestep embedding sees inputs that span a
-few directions over the batch, and its gradient is nearly that low-rank.
+A modulation layer driven only by a timestep embedding sees inputs that lie on a
+curve, a function of one scalar. Learned time embeddings often concentrate that
+curve in a few directions, and the layer's gradient then has the same low
+effective rank.
 Newton–Schulz polynomials push every singular value toward one, including the
 weak directions (the embedding's low-energy tail, rounding noise, momentum
 residue), so the update spends a full-size step on input directions the layer
