@@ -182,6 +182,11 @@ higher-dimensional weight flattened to `(shape[0], rest)`. For a convolution
 that is `(out, in * kh * kw)`; for a transposed convolution the rows are its
 input channels.
 
+Same-shape blocks are stepped together, in runs of at most `2**28` update
+elements (blocks × updated rows × columns): a step holds a few float32 and
+bfloat16 copies of a run's update, so larger buckets are split to bound that
+transient memory (a parameter above the cap runs alone).
+
 ## Precision
 
 - **Parameters and state are float32.** `Dion` rejects other parameter dtypes:

@@ -35,12 +35,25 @@ from dionw.matrix_update import MomentumForm
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ["step_run"]
+__all__ = ["MAX_RUN_ELEMENTS", "run_elements", "step_run"]
 
 # Update RMS of AdamW that matrix steps are matched to (Moonshot's 0.2).
 ADAMW_UPDATE_RMS: Final[float] = 0.2
 # Added to the Frobenius norm before Newton-Schulz; independent of AdamW's eps.
 NEWTON_SCHULZ_EPS: Final[float] = 1e-8
+# Largest update (blocks x selected rows x cols) one run orthogonalizes at once:
+# a step holds a few float32 and bfloat16 copies of it, so a bigger bucket is
+# stepped in several runs (1 GiB of float32 per copy). A 5B DiT on GH200 (MOSS
+# shapes): full-row Muon's step peak drops from 28.9 GiB above the state to
+# 3.45 GiB at the same step time; Dion at fraction 0.25 from 5.85 to 2.79 GiB
+# for +7 ms (116 ms).
+MAX_RUN_ELEMENTS: Final[int] = 2**28
+
+
+def run_elements(bucket: Bucket, position: int) -> int:
+    """Return the update elements of the parameter at ``position`` of ``bucket``."""
+    blocks = bucket.slices[position]
+    return (blocks.stop - blocks.start) * bucket.selected_rows * bucket.cols
 
 
 @dataclass(frozen=True)

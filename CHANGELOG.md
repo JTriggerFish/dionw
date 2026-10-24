@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Runs of a bucket hold at most `2**28` update elements (`MAX_RUN_ELEMENTS`):
+  larger buckets step in several runs, bounding the step's transient memory.
 - Plain Muon: `Dion(matrix_update=...)` takes a `MatrixUpdate`
   (orthogonalization, `RowNormalization`: NorMuon or none, `MomentumForm`:
   heavy ball or Nesterov) in place of `newton_schulz`; `DION3_UPDATE` is the

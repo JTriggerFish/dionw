@@ -61,7 +61,7 @@ from dionw._keys import (
     ROW_NORMALIZATION_KEY,
     STRUCTURAL_KEYS,
 )
-from dionw._matrix_step import step_run
+from dionw._matrix_step import MAX_RUN_ELEMENTS, run_elements, step_run
 from dionw.ema import EMAConfig, IntegratedEMAOptimizer, ProfileRegion, no_profile
 from dionw.matrix_update import (
     DION3_UPDATE,
@@ -349,15 +349,22 @@ class _DionCore(Optimizer):
         return self._buckets
 
     def _step_bucket(self, bucket: Bucket) -> None:
-        """Step the bucket's parameters that have gradients, in contiguous runs."""
+        """Step the bucket's parameters that have gradients, in contiguous runs.
+
+        A run holds at most ``MAX_RUN_ELEMENTS`` update elements (a parameter
+        above it runs alone), which bounds the step's transient memory.
+        """
         group = self.param_groups[bucket.group_index]
         run: list[int] = []
+        elements = 0
         for position, param in enumerate(bucket.params):
+            size = run_elements(bucket, position)
+            if run and (param.grad is None or elements + size > MAX_RUN_ELEMENTS):
+                step_run(bucket, run, group, self.state)
+                run, elements = [], 0
             if param.grad is not None:
                 run.append(position)
-            elif run:
-                step_run(bucket, run, group, self.state)
-                run = []
+                elements += size
         if run:
             step_run(bucket, run, group, self.state)
 

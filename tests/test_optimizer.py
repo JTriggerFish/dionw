@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import torch
@@ -12,6 +12,7 @@ from dion import NorDion2, NorMuon
 from torch import Tensor, nn
 
 import dionw._buckets
+import dionw.optimizer
 from dionw import (
     FRACTION_KEY,
     NEWTON_SCHULZ_KEY,
@@ -32,6 +33,9 @@ from dionw import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+
+    from dionw._buckets import Bucket
+    from dionw._keys import ParamState
 
 LR = 1e-3
 
@@ -677,6 +681,50 @@ def test_runs_split_by_missing_gradients_step_like_lone_parameters(
             ours.detach(), reference.detach(), rtol=1e-5, atol=1e-6
         )
     torch.testing.assert_close(bucketed[2].detach(), start[2], rtol=0, atol=0)
+
+
+def test_runs_above_the_element_cap_step_like_lone_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bucket above ``MAX_RUN_ELEMENTS`` steps in runs below it.
+
+    Each parameter gets the step it would get alone (the exact polar factor, as
+    above).
+    """
+    monkeypatch.setattr(dionw._buckets, "newton_schulz_fn", lambda _kind: _exact_polar)
+    # Two of the four 32 x 48 blocks per run.
+    monkeypatch.setattr(dionw.optimizer, "MAX_RUN_ELEMENTS", 2 * 32 * 48)
+    runs: list[int] = []
+    real_step_run = dionw.optimizer.step_run
+
+    def counted(
+        bucket: Bucket,
+        positions: Sequence[int],
+        group: dict[str, Any],
+        state: ParamState,
+    ) -> None:
+        runs.append(len(positions))
+        real_step_run(bucket, positions, group, state)
+
+    monkeypatch.setattr(dionw.optimizer, "step_run", counted)
+    torch.manual_seed(0)
+    start = [torch.randn(32, 48, device="cuda") * 0.02 for _ in range(4)]
+    bucketed = [nn.Parameter(t.clone()) for t in start]
+    alone = [nn.Parameter(t.clone()) for t in start]
+    together = _dion(bucketed, 1.0, NewtonSchulz.GRAM)
+    separately = [_dion([p], 1.0, NewtonSchulz.GRAM) for p in alone]
+    for _ in range(3):
+        for ours, reference in zip(bucketed, alone, strict=True):
+            grad = torch.randn_like(ours)
+            ours.grad, reference.grad = grad.clone(), grad.clone()
+        together.step()
+        for optimizer in separately:
+            optimizer.step()
+    assert runs[:2] == [2, 2]
+    for ours, reference in zip(bucketed, alone, strict=True):
+        torch.testing.assert_close(
+            ours.detach(), reference.detach(), rtol=1e-5, atol=1e-6
+        )
 
 
 def test_initialize_state_and_late_adamw_groups() -> None:
