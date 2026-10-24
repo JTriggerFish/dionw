@@ -328,10 +328,10 @@ def test_checkpoints_move_between_gpu_and_cpu_shadows(
         for param, grad in zip(params, grads, strict=True):
             param.grad = grad.clone()
         optimizer.step()
-    assert original.ema is not None
-    assert moved.ema is not None
-    original.ema.flush_pending_updates()
-    moved.ema.flush_pending_updates()
+        # The two optimizers share the parameters: CPU EMA's snapshot copy may
+        # still be reading them, so finish it before the next one overwrites them.
+        assert optimizer.ema is not None
+        optimizer.ema.flush_pending_updates()
     for param in params:
         torch.testing.assert_close(
             moved.state[param]["ema_shadow"].cuda(),
