@@ -4,8 +4,9 @@ Each kernel reads a parameter's gradient and momentum once:
 
 - ``accumulate_row_l1``: ``M += G`` and each row's l1 norm (the row scores the
   top-k selection reads), for blocks that update a fraction of their rows;
-- ``accumulate_copy_decay``: ``U = M + G`` (the Newton-Schulz input, float32)
-  and ``M = momentum * (M + G)``, for blocks that update every row.
+- ``accumulate_copy_decay``: ``M = momentum * (M + G)`` and the Newton-Schulz
+  input (float32): ``U = M + G`` before the decay (heavy ball) or ``U = G + M``
+  after it (Nesterov), for blocks that update every row.
 
 Momentum is float32 and contiguous ``[rows, cols]``; the gradient must be
 contiguous in the same layout (callers use torch ops otherwise).
@@ -29,7 +30,9 @@ _ELEMENT_BLOCK = 2048
 class _Launch(Protocol):
     """Host launch signature, distinct from the decorated kernel's DSL types."""
 
-    def __call__(self, *arguments: Tensor | int | float, BLOCK: int) -> None:
+    def __call__(
+        self, *arguments: Tensor | int | float, BLOCK: int, **flags: bool
+    ) -> None:
         """Launch on CUDA."""
         ...
 
@@ -54,14 +57,24 @@ def _accumulate_row_l1_kernel(
 
 @triton.jit
 def _accumulate_copy_decay_kernel(
-    grad_ptr, momentum_ptr, out_ptr, decay, numel, BLOCK: tl.constexpr
+    grad_ptr,
+    momentum_ptr,
+    out_ptr,
+    decay,
+    numel,
+    NESTEROV: tl.constexpr,
+    BLOCK: tl.constexpr,
 ):
     offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
     grad = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
     momentum = tl.load(momentum_ptr + offsets, mask=mask, other=0.0) + grad
-    tl.store(out_ptr + offsets, momentum, mask=mask)
-    tl.store(momentum_ptr + offsets, momentum * decay, mask=mask)
+    decayed = momentum * decay
+    if NESTEROV:
+        tl.store(out_ptr + offsets, grad + decayed, mask=mask)
+    else:
+        tl.store(out_ptr + offsets, momentum, mask=mask)
+    tl.store(momentum_ptr + offsets, decayed, mask=mask)
 
 
 def _check(grad: Tensor, momentum: Tensor) -> None:
@@ -91,19 +104,30 @@ def accumulate_row_l1(
 
 
 def accumulate_copy_decay(
-    grad: Tensor, momentum: Tensor, out: Tensor, decay: float
+    grad: Tensor, momentum: Tensor, out: Tensor, decay: float, *, nesterov: bool
 ) -> None:
-    """``out = momentum + grad``; ``momentum = decay * (momentum + grad)``.
+    """``momentum = decay * (momentum + grad)``; ``out`` = the Newton-Schulz input.
 
     Args:
         grad: The gradient (any float dtype), contiguous.
         momentum: float32 momentum, contiguous.
-        out: float32 output of the momentum's size, contiguous.
+        out: float32 output of the momentum's size, contiguous: ``momentum +
+            grad`` before the decay, or with ``nesterov`` ``grad`` plus the
+            decayed momentum.
         decay: The momentum decay.
+        nesterov: Write the Nesterov input instead of the heavy-ball one.
     """
     _check(grad, momentum)
     numel = momentum.numel()
     launch = cast(
         "_Launch", _accumulate_copy_decay_kernel[(triton.cdiv(numel, _ELEMENT_BLOCK),)]
     )
-    launch(grad, momentum, out, float(decay), numel, BLOCK=_ELEMENT_BLOCK)
+    launch(
+        grad,
+        momentum,
+        out,
+        float(decay),
+        numel,
+        NESTEROV=nesterov,
+        BLOCK=_ELEMENT_BLOCK,
+    )

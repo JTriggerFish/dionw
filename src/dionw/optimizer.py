@@ -20,6 +20,12 @@ parameter, and ``c`` gives a block's step the Frobenius norm of its
 Weight decay is decoupled, ``W *= 1 - lr * weight_decay``, on every row.
 Parameters routed to AdamW get torch's fused AdamW kernel.
 
+Plain Muon (``dionw.matrix_update.MUON_UPDATE``, groups with ``fraction = 1``):
+``RowNormalization.NONE`` skips step 4, ``MomentumForm.NESTEROV`` orthogonalizes
+``G + momentum * B`` (``B = momentum * B + G``) instead of ``B``, and
+``NewtonSchulz.KELLER_TRITON`` runs Keller Jordan's iteration: microsoft/dion's
+``Muon(nesterov=True, adjust_lr="rms_norm")`` with that iteration.
+
 A block is a 2D weight, one head of a ``num_heads`` split (rows), or a
 higher-dimensional weight flattened to ``(shape[0], prod(shape[1:]))`` (a
 convolution's output channels are its rows). Same-shape blocks of a group share
@@ -46,15 +52,23 @@ from dionw._buckets import Bucket, block_shape, build_buckets
 from dionw._keys import (
     EXP_AVG_STATE,
     FRACTION_KEY,
+    MOMENTUM_FORM_KEY,
     MOMENTUM_KEY,
     MUON_BETA2_KEY,
     NEWTON_SCHULZ_KEY,
     NUM_HEADS_KEY,
     ROUTE_KEY,
+    ROW_NORMALIZATION_KEY,
     STRUCTURAL_KEYS,
 )
 from dionw._matrix_step import step_run
 from dionw.ema import EMAConfig, IntegratedEMAOptimizer, ProfileRegion, no_profile
+from dionw.matrix_update import (
+    DION3_UPDATE,
+    MatrixUpdate,
+    MomentumForm,
+    RowNormalization,
+)
 from dionw.newton_schulz import NewtonSchulz
 from dionw.routing import RouteKind
 
@@ -94,6 +108,8 @@ def _check_group(group: dict[str, Any]) -> None:
             "dionw.param_groups(model) instead of passing parameters directly"
         )
     NewtonSchulz(group[NEWTON_SCHULZ_KEY])
+    RowNormalization(group[ROW_NORMALIZATION_KEY])
+    MomentumForm(group[MOMENTUM_FORM_KEY])
     if float(group["lr"]) < 0.0 or float(group["weight_decay"]) < 0.0:
         raise ValueError("a group's lr and weight_decay must be >= 0")
     match RouteKind(group[ROUTE_KEY]):
@@ -109,17 +125,39 @@ def _check_matrix_group(group: dict[str, Any]) -> None:
     """Check a matrix group's fraction and its parameters' blocks.
 
     Raises:
-        ValueError: On a fraction outside (0, 1], a parameter with fewer than
-            two dimensions, or a head split that does not divide the rows.
+        ValueError: On a fraction outside (0, 1], Nesterov momentum with row
+            selection, a parameter with fewer than two dimensions, or a head
+            split that does not divide the rows.
     """
-    if not 0.0 < float(group[FRACTION_KEY]) <= 1.0:
-        raise ValueError(f"fraction must be in (0, 1], got {group[FRACTION_KEY]}")
+    fraction = float(group[FRACTION_KEY])
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(f"fraction must be in (0, 1], got {fraction}")
+    nesterov = MomentumForm(group[MOMENTUM_FORM_KEY]) is MomentumForm.NESTEROV
+    if nesterov and fraction < 1.0:
+        raise ValueError(
+            f"Nesterov momentum needs every row per step, got fraction {fraction}: "
+            "build the groups with fraction=1.0 or use MomentumForm.HEAVY_BALL"
+        )
     for param in group["params"]:
         if param.ndim < 2:
             raise ValueError(
                 f"a matrix group holds a {param.ndim}-D parameter; route it to AdamW"
             )
         block_shape(param, group[NUM_HEADS_KEY])
+
+
+def _with_pre_option_keys(saved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return saved groups with the matrix-update keys of the update before them.
+
+    A group saved before the row-normalization and momentum-form options had
+    the only update dionw had then (NorMuon, heavy-ball momentum);
+    ``_check_structure`` then refuses such a checkpoint for any other options.
+    """
+    legacy = {
+        ROW_NORMALIZATION_KEY: RowNormalization.NORMUON.value,
+        MOMENTUM_FORM_KEY: MomentumForm.HEAVY_BALL.value,
+    }
+    return [{**legacy, **group} if ROUTE_KEY in group else group for group in saved]
 
 
 def _check_structure(
@@ -184,7 +222,7 @@ class _DionCore(Optimizer):
         betas: tuple[float, float],
         weight_decay: float,
         eps: float,
-        newton_schulz: NewtonSchulz,
+        matrix_update: MatrixUpdate,
     ) -> None:
         """Validate hyperparameters and add the groups (``Dion`` documents them)."""
         _check_hyperparameters(
@@ -207,7 +245,9 @@ class _DionCore(Optimizer):
             "eps": eps,
             FRACTION_KEY: 1.0,
             NUM_HEADS_KEY: None,
-            NEWTON_SCHULZ_KEY: newton_schulz.value,
+            NEWTON_SCHULZ_KEY: matrix_update.newton_schulz.value,
+            ROW_NORMALIZATION_KEY: matrix_update.row_normalization.value,
+            MOMENTUM_FORM_KEY: matrix_update.momentum_form.value,
         }
         self._buckets: list[Bucket] | None = None
         super().__init__(params, defaults)
@@ -267,10 +307,12 @@ class _DionCore(Optimizer):
 
         Raises:
             ValueError: If the saved groups differ from the optimizer's in count,
-                route, fraction, head split or Newton-Schulz kind.
+                route, fraction, head split, Newton-Schulz kind, row
+                normalization or momentum form.
         """
-        _check_structure(state_dict["param_groups"], self.param_groups)
-        super().load_state_dict(state_dict)
+        saved = _with_pre_option_keys(state_dict["param_groups"])
+        _check_structure(saved, self.param_groups)
+        super().load_state_dict({**state_dict, "param_groups": saved})
         self._buckets = None
 
     @overload
@@ -338,7 +380,7 @@ class Dion(IntegratedEMAOptimizer, _DionCore):
         betas: tuple[float, float] = (0.9, 0.95),
         weight_decay: float = 0.0,
         eps: float = 1e-8,
-        newton_schulz: NewtonSchulz = NewtonSchulz.GRAM,
+        matrix_update: MatrixUpdate = DION3_UPDATE,
         ema: EMAConfig | None = None,
         profile_region: ProfileRegion = no_profile,
     ) -> None:
@@ -352,13 +394,15 @@ class Dion(IntegratedEMAOptimizer, _DionCore):
             betas: AdamW betas of AdamW-routed parameters.
             weight_decay: Decoupled weight decay of groups without their own.
             eps: AdamW epsilon.
-            newton_schulz: Orthogonalization of matrix updates.
+            matrix_update: Orthogonalization, row normalization and momentum
+                form of matrix updates (``DION3_UPDATE`` or ``MUON_UPDATE``).
             ema: EMA schedule and placement, or None for no EMA.
             profile_region: Named profiling region around EMA work.
 
         Raises:
             TypeError: For groups without a route or non-float32 parameters.
-            ValueError: On out-of-range hyperparameters or parameters off CUDA.
+            ValueError: On out-of-range hyperparameters, Nesterov momentum with
+                row selection, or parameters off CUDA.
         """
         super().__init__(
             params,
@@ -368,6 +412,6 @@ class Dion(IntegratedEMAOptimizer, _DionCore):
             betas=betas,
             weight_decay=weight_decay,
             eps=eps,
-            newton_schulz=newton_schulz,
+            matrix_update=matrix_update,
         )
         self._init_integrated_ema(ema, profile_region)

@@ -15,8 +15,11 @@ from dionw import (
     EMAConfig,
     EMADevice,
     IntegratedEMAOptimizer,
+    MatrixUpdate,
+    MomentumForm,
     NewtonSchulz,
     RouteKind,
+    RowNormalization,
 )
 from dionw.ema import no_profile
 
@@ -55,7 +58,11 @@ def _optimizer(params: list[nn.Parameter], ema: EMAConfig | None) -> Dion:
         betas=(0.9, 0.99),
         weight_decay=0.0,
         eps=1e-8,
-        newton_schulz=NewtonSchulz.GRAM,
+        matrix_update=MatrixUpdate(
+            newton_schulz=NewtonSchulz.GRAM,
+            row_normalization=RowNormalization.NORMUON,
+            momentum_form=MomentumForm.HEAVY_BALL,
+        ),
         ema=ema,
     )
 

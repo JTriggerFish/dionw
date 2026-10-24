@@ -3,9 +3,12 @@
 The stages, per block (the ``Dion`` docstring has the math):
 
 1. ``accumulate``: ``M += G``, and for row-selecting blocks each row's l1 norm;
-2. ``select``: top-``k`` rows, decayed in ``M`` (error feedback);
-3. ``orthogonalize``: Polar Express on the selected (or all) rows;
-4. ``normalize_rows``: NorMuon row normalization, times the signed step;
+2. ``select``: top-``k`` rows, decayed in ``M`` (error feedback); blocks that
+   update every row decay all of ``M`` and orthogonalize its heavy-ball or
+   Nesterov form (``MomentumForm``);
+3. ``orthogonalize``: the group's Newton-Schulz on the selected (or all) rows;
+4. ``finish``: NorMuon row normalization or none (``RowNormalization``), times
+   the signed step;
 5. ``apply``: decoupled weight decay, then the update added to the weights.
 """
 
@@ -20,12 +23,14 @@ from torch import Tensor
 
 from dionw._buckets import Bucket, raised_recompile_limits
 from dionw._keys import (
+    MOMENTUM_FORM_KEY,
     MOMENTUM_KEY,
     MOMENTUM_STATE,
-    MUON_BETA2_KEY,
     ParamState,
 )
 from dionw._momentum_kernels import accumulate_copy_decay, accumulate_row_l1
+from dionw._row_normalization import finish
+from dionw.matrix_update import MomentumForm
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -34,7 +39,6 @@ __all__ = ["step_run"]
 
 # Update RMS of AdamW that matrix steps are matched to (Moonshot's 0.2).
 ADAMW_UPDATE_RMS: Final[float] = 0.2
-NORMALIZATION_EPS: Final[float] = 1e-8
 # Added to the Frobenius norm before Newton-Schulz; independent of AdamW's eps.
 NEWTON_SCHULZ_EPS: Final[float] = 1e-8
 
@@ -162,10 +166,9 @@ def _selected_update(
     )
     selected_variance = torch.gather(run.variance, 1, index)
     orthogonal = _orthogonalize(run, selected, selected_variance)
-    update, selected_variance = _normalize_rows(
-        orthogonal, selected_variance, float(group[MUON_BETA2_KEY]), step
-    )
-    run.variance.scatter_(1, index, selected_variance)
+    update, selected_variance = finish(orthogonal, selected_variance, group, step)
+    if selected_variance is not None:
+        run.variance.scatter_(1, index, selected_variance)
     return update, index
 
 
@@ -189,30 +192,49 @@ def _full_update(run: _Run, group: dict[str, Any], step: Tensor) -> Tensor:
     Returns:
         The ``[blocks, rows, cols]`` float32 update.
     """
-    current = _accumulate_copy_decay(run, float(group[MOMENTUM_KEY]))
+    nesterov = MomentumForm(group[MOMENTUM_FORM_KEY]) is MomentumForm.NESTEROV
+    current = _accumulate_copy_decay(run, float(group[MOMENTUM_KEY]), nesterov)
     orthogonal = _orthogonalize(run, current, run.variance)
-    update, variance = _normalize_rows(
-        orthogonal, run.variance, float(group[MUON_BETA2_KEY]), step
-    )
-    run.variance.copy_(variance)
+    update, variance = finish(orthogonal, run.variance, group, step)
+    if variance is not None:
+        run.variance.copy_(variance)
     return update
 
 
-def _accumulate_copy_decay(run: _Run, decay: float) -> Tensor:
-    """Return ``M + G`` (float32) and set ``M = decay * (M + G)``."""
+def _accumulate_copy_decay(run: _Run, decay: float, nesterov: bool) -> Tensor:
+    """Set ``M = decay * (M + G)`` and return the float32 Newton-Schulz input.
+
+    The input is ``M + G`` before the decay (heavy ball), or ``G + M`` after it
+    (Nesterov).
+    """
     if not run.fused:
-        torch._foreach_add_(run.momenta, run.grads)
-        current = run.momentum.clone()
-        run.momentum.mul_(decay)
-        return current
+        return _torch_copy_decay(run, decay, nesterov)
     current = torch.empty_like(run.momentum)
     flat, cols = current.view(-1), run.bucket.cols
     for grad, momentum, rows in zip(
         run.grads, run.momenta, run.row_slices(), strict=True
     ):
         accumulate_copy_decay(
-            grad, momentum, flat[rows.start * cols : rows.stop * cols], decay
+            grad,
+            momentum,
+            flat[rows.start * cols : rows.stop * cols],
+            decay,
+            nesterov=nesterov,
         )
+    return current
+
+
+def _torch_copy_decay(run: _Run, decay: float, nesterov: bool) -> Tensor:
+    """``_accumulate_copy_decay`` in torch ops, for non-contiguous gradients."""
+    torch._foreach_add_(run.momenta, run.grads)
+    if not nesterov:
+        current = run.momentum.clone()
+        run.momentum.mul_(decay)
+        return current
+    run.momentum.mul_(decay)
+    current = run.momentum.clone()
+    for grad, own in zip(run.grads, run.own_blocks(), strict=True):
+        current[own].view(grad.shape).add_(grad)
     return current
 
 
@@ -234,28 +256,6 @@ def _mark_block_dim_dynamic(*tensors: Tensor) -> None:
     """Compile the block dimension of ``[N, ...]`` inputs symbolically."""
     for tensor in tensors:
         torch._dynamo.maybe_mark_dynamic(tensor, 0)
-
-
-@torch.compile(dynamic=False, fullgraph=True)
-def _normalize_rows(
-    update: Tensor, variance: Tensor, beta2: float, step: Tensor
-) -> tuple[Tensor, Tensor]:
-    """NorMuon row normalization.
-
-    Divides each row by the root of an EMA of its mean square, restores the
-    block's Frobenius norm and multiplies by ``step`` (a 0-d device tensor, so a
-    scheduled LR does not recompile).
-
-    Returns:
-        The float32 step and the new variance.
-    """
-    update = update.float()
-    norm = torch.linalg.vector_norm(update, dim=(-2, -1), keepdim=True)
-    variance = torch.lerp(variance, update.square().mean(-1, keepdim=True), 1 - beta2)
-    normalized = update / (variance.sqrt() + NORMALIZATION_EPS)
-    new_norm = torch.linalg.vector_norm(normalized, dim=(-2, -1), keepdim=True)
-    restore = norm / new_norm.clamp_min(NORMALIZATION_EPS)
-    return normalized * (restore * step), variance
 
 
 def _apply(

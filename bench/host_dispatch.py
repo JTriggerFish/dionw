@@ -37,7 +37,11 @@ def host_dispatch_ms(width: int, depth: int, heads: int) -> float:
         lr=LR,
         betas=BETAS,
         weight_decay=0.0,
-        newton_schulz=dionw.NewtonSchulz.GRAM,
+        matrix_update=dionw.MatrixUpdate(
+            newton_schulz=dionw.NewtonSchulz.GRAM,
+            row_normalization=dionw.RowNormalization.NORMUON,
+            momentum_form=dionw.MomentumForm.HEAVY_BALL,
+        ),
     )
     for _ in range(WARMUP_STEPS):
         optimizer.step()

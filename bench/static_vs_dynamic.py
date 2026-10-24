@@ -16,7 +16,7 @@ import torch
 
 from bench._timing import median_ms, raised_recompile_limits
 from dionw import _gram as gram_module
-from dionw import _matrix_step as matrix_step
+from dionw import _row_normalization as row_normalization
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,7 +38,7 @@ def _compiled(
 ) -> tuple[Callable[..., torch.Tensor], Callable[..., object]]:
     """Return Gram Newton-Schulz and the row normalization, compiled afresh."""
     raw_ns = inspect.unwrap(gram_module.gram_polar_express)
-    raw_norm = inspect.unwrap(matrix_step._normalize_rows)
+    raw_norm = inspect.unwrap(row_normalization.normalize_rows)
     return (
         torch.compile(raw_ns, dynamic=dynamic, fullgraph=True),
         torch.compile(raw_norm, dynamic=dynamic, fullgraph=True),

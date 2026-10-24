@@ -147,7 +147,11 @@ def _dionw(
         lr=LR,
         betas=BETAS,
         weight_decay=0.0,
-        newton_schulz=newton_schulz,
+        matrix_update=dionw.MatrixUpdate(
+            newton_schulz=newton_schulz,
+            row_normalization=dionw.RowNormalization.NORMUON,
+            momentum_form=dionw.MomentumForm.HEAVY_BALL,
+        ),
     )
 
 

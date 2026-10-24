@@ -95,7 +95,7 @@ autocast ([Precision](#precision)).
 | `betas` | (0.9, 0.95) | (0.9, 0.95) | AdamW betas of AdamW-routed parameters |
 | `weight_decay` | 0.0 | 0.01 | Decoupled weight decay of decayed groups |
 | `eps` | 1e-8 | `epsilon` 1e-8 | AdamW epsilon (Newton–Schulz uses a fixed 1e-8) |
-| `newton_schulz` | `NewtonSchulz.GRAM` | Polar Express | Orthogonalization of matrix updates ([Precision](#precision)) |
+| `matrix_update` | `DION3_UPDATE` | Polar Express, NorMuon, heavy ball | `MatrixUpdate`: orthogonalization (`NewtonSchulz.GRAM`, [Precision](#precision)), row normalization (`RowNormalization.NORMUON`, step 4 below) and momentum form (`MomentumForm.HEAVY_BALL`); `MUON_UPDATE` for plain Muon |
 | `ema` | `None` | — | EMA schedule and placement (`EMAConfig`) |
 | learning-rate scaling | `0.2 * sqrt(max(rows, cols))`, fixed | `adjust_lr="spectral_norm"` | See [The update](#the-update) |
 
@@ -156,6 +156,26 @@ selected rows already span every column.
 
 Weight decay is decoupled and applies to every row:
 `W *= 1 - lr * weight_decay`.
+
+**Plain Muon.** Keller Jordan's Muon [[6]](#references) updates every row with
+Nesterov momentum, no row normalization and its own Newton–Schulz iteration.
+In dionw that is:
+
+```python
+groups, report = dionw.param_groups(model, fraction=1.0)
+optimizer = dionw.Dion(groups, lr=3e-4, matrix_update=dionw.MUON_UPDATE)
+```
+
+`MUON_UPDATE` is `MatrixUpdate(NewtonSchulz.KELLER_TRITON, RowNormalization.NONE,
+MomentumForm.NESTEROV)`.
+
+Both momentum forms keep `B = momentum * B + G`; heavy ball orthogonalizes
+`B`, Nesterov `G + momentum * B`. Nesterov needs `fraction = 1`: row
+selection's error feedback has no Nesterov form, and such a group is refused.
+`tests/test_muon.py` checks these steps against a reference Muon step and
+against microsoft/dion's `Muon(nesterov=True, adjust_lr="rms_norm")`, which
+differs only in scaling the bfloat16 polar factor by the learning rate in
+bfloat16 (dionw scales it in float32).
 
 A block is a 2D weight, one head of a `num_heads` split, or a
 higher-dimensional weight flattened to `(shape[0], rest)`. For a convolution
@@ -292,8 +312,7 @@ lie on a low-dimensional curve (or a small set of points), often concentrated in
 a few directions, so their gradients can be nearly that low-rank, and an
 orthogonalized update lifts the weak directions to full size (see
 [Low-rank inputs](#low-rank-inputs)). Route them to AdamW, without weight decay,
-instead of splitting them; hybrid Muon–AdamW DiT recipes such as MOSS-Image's
-exclude modulation projections from Muon too:
+instead of splitting them:
 
 ```python
 class Modulation(nn.Module):
@@ -496,6 +515,11 @@ until the previous CPU update has finished.
 - **`NewtonSchulz.POLAR_EXPRESS_TRITON`** is microsoft/dion's Polar Express
   with Triton symmetric products.
 - **`NewtonSchulz.POLAR_EXPRESS`** uses cuBLAS products.
+- **`NewtonSchulz.KELLER_TRITON`** and **`NewtonSchulz.KELLER`** run Keller
+  Jordan's Muon iteration (one quintic, five steps) with the same Triton or
+  cuBLAS products. It pushes singular values into about [0.7, 1.2] instead of
+  onto 1, and does not damp bfloat16 rounding: a one-ulp change of the input
+  moves its output by about 1.5%.
 
 | Gram's speedup on wide blocks | RTX 4090 | RTX 5090 | GH200 |
 |---|---|---|---|

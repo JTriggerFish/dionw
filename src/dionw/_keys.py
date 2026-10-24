@@ -16,12 +16,14 @@ __all__ = [
     "EXP_AVG_SQ_STATE",
     "EXP_AVG_STATE",
     "FRACTION_KEY",
+    "MOMENTUM_FORM_KEY",
     "MOMENTUM_KEY",
     "MOMENTUM_STATE",
     "MUON_BETA2_KEY",
     "NEWTON_SCHULZ_KEY",
     "NUM_HEADS_KEY",
     "ROUTE_KEY",
+    "ROW_NORMALIZATION_KEY",
     "STRUCTURAL_KEYS",
     "VARIANCE_STATE",
     "ParamState",
@@ -43,12 +45,18 @@ NUM_HEADS_KEY: Final[str] = "num_heads"
 MOMENTUM_KEY: Final[str] = "momentum"
 # EMA decay of each row's squared update (NorMuon).
 MUON_BETA2_KEY: Final[str] = "muon_beta2"
+# What a matrix step does to the orthogonalized rows (a RowNormalization value).
+ROW_NORMALIZATION_KEY: Final[str] = "row_normalization"
+# Which momentum a matrix step orthogonalizes (a MomentumForm value).
+MOMENTUM_FORM_KEY: Final[str] = "momentum_form"
 # Keys fixed when the groups are built; load_state_dict refuses a change.
 STRUCTURAL_KEYS: Final[tuple[str, ...]] = (
     ROUTE_KEY,
     FRACTION_KEY,
     NUM_HEADS_KEY,
     NEWTON_SCHULZ_KEY,
+    ROW_NORMALIZATION_KEY,
+    MOMENTUM_FORM_KEY,
 )
 
 # --- per-parameter state keys -------------------------------------------------

@@ -14,7 +14,14 @@ from torch import Tensor
 
 from dionw._symmetric_kernels import ns_line_1, ns_line_2
 
-__all__ = ["POLAR_EXPRESS_COEFFICIENTS", "polar_express", "polar_express_triton"]
+__all__ = [
+    "POLAR_EXPRESS_COEFFICIENTS",
+    "Coefficients",
+    "polar_express",
+    "polar_express_triton",
+    "quintic_cublas",
+    "quintic_triton",
+]
 
 # Polar Express coefficients (num_iters=5, safety_factor=2e-2, cushion=2); the
 # 1.02 safety factor is baked into all but the last polynomial.
@@ -29,41 +36,51 @@ POLAR_EXPRESS_COEFFICIENTS: Final[tuple[tuple[float, float, float], ...]] = (
 POLAR_EXPRESS_NORM_SAFETY: Final[float] = 1.02
 
 
-@torch.compile(dynamic=False, fullgraph=True)
-def polar_express(matrix: Tensor, epsilon: float) -> Tensor:
-    """Polar Express in bfloat16 with cuBLAS products (``[..., rows, cols]``).
+# One polynomial step's (a, b, c): x <- a x + (b A + c A^2) x with A = x x^T.
+Coefficients = tuple[tuple[float, float, float], ...]
+
+
+def quintic_cublas(
+    matrix: Tensor, epsilon: float, coefficients: Coefficients, norm_safety: float
+) -> Tensor:
+    """Quintic Newton-Schulz in bfloat16 with cuBLAS products (``[..., rows, cols]``).
 
     Args:
         matrix: The (batched) matrix, any float dtype.
         epsilon: Added to the scaled Frobenius norm before normalizing.
+        coefficients: One ``(a, b, c)`` per step.
+        norm_safety: Factor on the Frobenius norm before normalizing.
 
     Returns:
         The orthogonalized input in bfloat16.
     """
     x = matrix.bfloat16()
-    x = x / (x.norm(dim=(-2, -1), keepdim=True) * POLAR_EXPRESS_NORM_SAFETY + epsilon)
+    x = x / (x.norm(dim=(-2, -1), keepdim=True) * norm_safety + epsilon)
     if matrix.size(-2) > matrix.size(-1):
         # Tall: the small cols x cols product, multiplied from the right.
-        for a, b, c in POLAR_EXPRESS_COEFFICIENTS:
+        for a, b, c in coefficients:
             gram = x.mT @ x
             poly = b * gram + c * (gram @ gram)
             x = a * x + x @ poly
     else:
         # Wide: the small rows x rows product, multiplied from the left.
-        for a, b, c in POLAR_EXPRESS_COEFFICIENTS:
+        for a, b, c in coefficients:
             gram = x @ x.mT
             poly = b * gram + c * (gram @ gram)
             x = a * x + poly @ x
     return x
 
 
-@torch.compile(dynamic=False, fullgraph=True)
-def polar_express_triton(matrix: Tensor, epsilon: float) -> Tensor:
-    """Polar Express in bfloat16 with the symmetric products in Triton.
+def quintic_triton(
+    matrix: Tensor, epsilon: float, coefficients: Coefficients, norm_safety: float
+) -> Tensor:
+    """Quintic Newton-Schulz in bfloat16 with the symmetric products in Triton.
 
     Args:
         matrix: The (batched) matrix, any float dtype.
         epsilon: Added to the scaled Frobenius norm before normalizing.
+        coefficients: One ``(a, b, c)`` per step.
+        norm_safety: Factor on the Frobenius norm before normalizing.
 
     Returns:
         The orthogonalized input in bfloat16.
@@ -72,16 +89,32 @@ def polar_express_triton(matrix: Tensor, epsilon: float) -> Tensor:
     x = matrix.to(dtype=torch.bfloat16)
     if tall:
         x = x.mT
-    x = x / (x.norm(dim=(-2, -1), keepdim=True) * POLAR_EXPRESS_NORM_SAFETY + epsilon)
+    x = x / (x.norm(dim=(-2, -1), keepdim=True) * norm_safety + epsilon)
 
     x = x.contiguous()
     gram = torch.empty((*x.shape[:-1], x.size(-2)), device=x.device, dtype=x.dtype)
     poly = torch.empty_like(gram)
     out = torch.empty_like(x)
     line_3 = torch.baddbmm if x.ndim > 2 else torch.addmm
-    for a, b, c in POLAR_EXPRESS_COEFFICIENTS:
+    for a, b, c in coefficients:
         ns_line_1(x, out=gram)
         ns_line_2(gram, alpha=c, beta=b, out=poly)
         line_3(x, poly, x, beta=a, out=out)
         x, out = out, x
     return x.mT if tall else x
+
+
+@torch.compile(dynamic=False, fullgraph=True)
+def polar_express(matrix: Tensor, epsilon: float) -> Tensor:
+    """Polar Express in bfloat16 with cuBLAS products (``quintic_cublas``)."""
+    return quintic_cublas(
+        matrix, epsilon, POLAR_EXPRESS_COEFFICIENTS, POLAR_EXPRESS_NORM_SAFETY
+    )
+
+
+@torch.compile(dynamic=False, fullgraph=True)
+def polar_express_triton(matrix: Tensor, epsilon: float) -> Tensor:
+    """Polar Express in bfloat16 with symmetric Triton products (``quintic_triton``)."""
+    return quintic_triton(
+        matrix, epsilon, POLAR_EXPRESS_COEFFICIENTS, POLAR_EXPRESS_NORM_SAFETY
+    )

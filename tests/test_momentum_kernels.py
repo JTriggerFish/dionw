@@ -25,6 +25,18 @@ def test_accumulate_copy_decay_matches_torch() -> None:
     momentum = torch.randn(5001, device="cuda")
     accumulated = momentum + grad
     out = torch.empty(5001, device="cuda")
-    accumulate_copy_decay(grad, momentum, out, 0.95)
+    accumulate_copy_decay(grad, momentum, out, 0.95, nesterov=False)
     torch.testing.assert_close(out, accumulated, rtol=0, atol=0)
     torch.testing.assert_close(momentum, accumulated * 0.95, rtol=1e-6, atol=1e-7)
+
+
+def test_accumulate_copy_decay_nesterov_matches_torch() -> None:
+    """With ``nesterov``, the output is ``G + momentum * (M + G)``."""
+    torch.manual_seed(0)
+    grad = torch.randn(5001, device="cuda")
+    momentum = torch.randn(5001, device="cuda")
+    decayed = (momentum + grad) * 0.95
+    out = torch.empty(5001, device="cuda")
+    accumulate_copy_decay(grad, momentum, out, 0.95, nesterov=True)
+    torch.testing.assert_close(momentum, decayed, rtol=1e-6, atol=1e-7)
+    torch.testing.assert_close(out, grad + decayed, rtol=1e-6, atol=1e-6)

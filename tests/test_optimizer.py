@@ -20,9 +20,12 @@ from dionw import (
     Dion,
     EMAConfig,
     EMADevice,
+    MatrixUpdate,
+    MomentumForm,
     NewtonSchulz,
     Route,
     RouteKind,
+    RowNormalization,
     param_groups,
 )
 
@@ -55,7 +58,11 @@ def _dion(
         betas=(0.9, 0.99),
         weight_decay=weight_decay,
         eps=1e-8,
-        newton_schulz=newton_schulz,
+        matrix_update=MatrixUpdate(
+            newton_schulz=newton_schulz,
+            row_normalization=RowNormalization.NORMUON,
+            momentum_form=MomentumForm.HEAVY_BALL,
+        ),
         ema=None,
     )
 
@@ -169,7 +176,11 @@ def test_adamw_route_equals_torch_fused_adamw() -> None:
         betas=(0.9, 0.98),
         weight_decay=0.1,
         eps=1e-8,
-        newton_schulz=NewtonSchulz.GRAM,
+        matrix_update=MatrixUpdate(
+            newton_schulz=NewtonSchulz.GRAM,
+            row_normalization=RowNormalization.NORMUON,
+            momentum_form=MomentumForm.HEAVY_BALL,
+        ),
         ema=None,
     )
     torch_adamw = torch.optim.AdamW(
@@ -224,7 +235,11 @@ def _net_optimizer(
         betas=(0.9, 0.98),
         weight_decay=0.01,
         eps=1e-8,
-        newton_schulz=newton_schulz,
+        matrix_update=MatrixUpdate(
+            newton_schulz=newton_schulz,
+            row_normalization=RowNormalization.NORMUON,
+            momentum_form=MomentumForm.HEAVY_BALL,
+        ),
         ema=ema,
     )
 
@@ -538,7 +553,11 @@ def _two_groups(decayed: Tensor, exempt: Tensor, fraction: float) -> Dion:
         betas=(0.9, 0.99),
         weight_decay=0.1,
         eps=1e-8,
-        newton_schulz=NewtonSchulz.GRAM,
+        matrix_update=MatrixUpdate(
+            newton_schulz=NewtonSchulz.GRAM,
+            row_normalization=RowNormalization.NORMUON,
+            momentum_form=MomentumForm.HEAVY_BALL,
+        ),
         ema=None,
     )
 
@@ -590,7 +609,11 @@ def test_head_split_equals_separate_heads(monkeypatch: pytest.MonkeyPatch) -> No
         betas=(0.9, 0.99),
         weight_decay=0.0,
         eps=1e-8,
-        newton_schulz=NewtonSchulz.GRAM,
+        matrix_update=MatrixUpdate(
+            newton_schulz=NewtonSchulz.GRAM,
+            row_normalization=RowNormalization.NORMUON,
+            momentum_form=MomentumForm.HEAVY_BALL,
+        ),
         ema=None,
     )
     separate = _dion(heads, 1.0, NewtonSchulz.GRAM)
@@ -707,6 +730,8 @@ def test_groups_are_validated_when_added() -> None:
         ("fraction", 0.25),
         ("newton_schulz", NewtonSchulz.POLAR_EXPRESS.value),
         ("dion_route", "adamw"),
+        ("row_normalization", RowNormalization.NONE.value),
+        ("momentum_form", MomentumForm.NESTEROV.value),
     ],
 )
 def test_loading_a_structurally_different_state_raises(key: str, value: object) -> None:
