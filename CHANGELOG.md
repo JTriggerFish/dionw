@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- EMA: `ema_weights_swapped` tells whether EMA weights are swapped in.
 - EMA: `EMAConfig(power_gamma=...)` selects Karras et al.'s power-function
   schedule (EDM2), decay `(1 - 1/n) ** (power_gamma + 1)` at EMA step n capped
   at `decay`; `EMAConfig.schedule` (`EMASchedule`) names the schedule in use.

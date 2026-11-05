@@ -205,6 +205,27 @@ def test_power_schedule() -> None:
         )
 
 
+def test_ema_weights_swapped_follows_swap_and_restore() -> None:
+    """The flag is set only between a swap and its restore."""
+    ema = _ema(
+        EMADevice.GPU,
+        decay=0.9,
+        every=1,
+        start_step=0,
+        decay_final=None,
+        ramp_steps=None,
+        power_gamma=None,
+    )
+    params = _params()
+    optimizer = _optimizer(params, ema)
+    assert not optimizer.ema_weights_swapped
+    _step(params, optimizer)
+    assert optimizer.swap_ema_weights()
+    assert optimizer.ema_weights_swapped
+    assert optimizer.restore_non_ema_weights()
+    assert not optimizer.ema_weights_swapped
+
+
 @pytest.mark.parametrize("device", list(EMADevice))
 def test_state_dict_round_trip_restores_shadows_and_count(device: EMADevice) -> None:
     ema = _ema(

@@ -248,6 +248,11 @@ class IntegratedEMAOptimizer(Optimizer):
         if not on_gpu:
             state[EMA_TMP_CPU] = new_cpu_staging(param, pin=pin)
 
+    @property
+    def ema_weights_swapped(self) -> bool:
+        """Whether ``swap_ema_weights`` holds EMA weights in the parameters."""
+        return bool(self._stored_params)
+
     @torch.no_grad()
     def swap_ema_weights(self, model: torch.nn.Module | None = None) -> bool:
         """Swap the parameters with their shadows, for evaluation.
