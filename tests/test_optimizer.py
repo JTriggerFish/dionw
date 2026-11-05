@@ -326,6 +326,7 @@ def test_resume_matches_uninterrupted_training(
         start_step=0,
         decay_final=None,
         decay_ramp_steps=None,
+        power_gamma=None,
     )
     torch.manual_seed(0)
     full = _Net().cuda()

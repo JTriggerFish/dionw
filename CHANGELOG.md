@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- EMA: `EMAConfig(power_gamma=...)` selects Karras et al.'s power-function
+  schedule (EDM2), decay `(1 - 1/n) ** (power_gamma + 1)` at EMA step n capped
+  at `decay`; `EMAConfig.schedule` (`EMASchedule`) names the schedule in use.
 - Runs of a bucket hold at most `2**28` update elements (`MAX_RUN_ELEMENTS`):
   larger buckets step in several runs, bounding the step's transient memory.
 - Plain Muon: `Dion(matrix_update=...)` takes a `MatrixUpdate`

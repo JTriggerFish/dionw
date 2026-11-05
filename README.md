@@ -118,6 +118,7 @@ autocast ([Precision](#precision)).
 | `update_every_n_steps` | 1 | Update every n steps, with decay `decay ** n` |
 | `start_step` | 0 | Step that first copies the live weights into the shadows; 0 copies at the first update |
 | `decay_final`, `decay_ramp_steps` | `None` | Optional linear ramp of the decay |
+| `power_gamma` | `None` | Karras's power-function schedule (EDM2): decay `(1 - 1/n) ** (power_gamma + 1)` at EMA step n, capped at `decay`; exclusive with the ramp |
 
 ## The update
 
@@ -383,7 +384,13 @@ optimizer.restore_non_ema_weights()
   lower `lr * weight_decay`.
 - **Schedule options:** `update_every_n_steps` applies `decay ** n` every n
   steps, `start_step` delays the start, and `decay_final` with
-  `decay_ramp_steps` ramps the decay linearly.
+  `decay_ramp_steps` ramps the decay linearly. `power_gamma` selects Karras
+  et al.'s power-function EMA (EDM2): at EMA step n the decay is
+  `(1 - 1/n) ** (power_gamma + 1)`, so the average always covers about the
+  last `1 / (power_gamma + 1)` of the steps so far (half-life about
+  `ln 2 * n / (power_gamma + 1)` steps; gamma 6.94 is EDM2's
+  `sigma_rel = 0.10`), capped at `decay`. `EMAConfig.schedule` names the
+  selected schedule (`EMASchedule`).
 
 ## Checkpoints and resume
 

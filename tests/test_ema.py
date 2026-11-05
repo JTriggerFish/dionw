@@ -14,6 +14,7 @@ from dionw import (
     Dion,
     EMAConfig,
     EMADevice,
+    EMASchedule,
     IntegratedEMAOptimizer,
     MatrixUpdate,
     MomentumForm,
@@ -32,6 +33,7 @@ def _ema(
     start_step: int,
     decay_final: float | None,
     ramp_steps: int | None,
+    power_gamma: float | None,
 ) -> EMAConfig:
     return EMAConfig(
         decay=decay,
@@ -41,6 +43,7 @@ def _ema(
         start_step=start_step,
         decay_final=decay_final,
         decay_ramp_steps=ramp_steps,
+        power_gamma=power_gamma,
     )
 
 
@@ -102,6 +105,7 @@ def test_shadows_follow_the_schedule(
             start_step=start_step,
             decay_final=None,
             ramp_steps=None,
+            power_gamma=None,
         ),
     )
     reference: list[torch.Tensor] | None = None
@@ -136,7 +140,13 @@ def test_shadows_follow_the_schedule(
 
 def test_decay_ramp() -> None:
     config = _ema(
-        EMADevice.GPU, decay=0.9, every=1, start_step=0, decay_final=0.99, ramp_steps=10
+        EMADevice.GPU,
+        decay=0.9,
+        every=1,
+        start_step=0,
+        decay_final=0.99,
+        ramp_steps=10,
+        power_gamma=None,
     )
     assert config.decay_at_step(0) == 0.9
     assert config.decay_at_step(5) == pytest.approx(0.945)
@@ -149,13 +159,62 @@ def test_decay_ramp() -> None:
             start_step=0,
             decay_final=0.99,
             ramp_steps=None,
+            power_gamma=None,
+        )
+
+
+def test_power_schedule() -> None:
+    """Karras's power function, capped at ``decay``, exclusive with the ramp.
+
+    The decay at EMA step n is ``(1 - 1/n) ** (gamma + 1)``.
+    """
+    gamma = 6.94
+    config = _ema(
+        EMADevice.GPU,
+        decay=0.999,
+        every=1,
+        start_step=0,
+        decay_final=None,
+        ramp_steps=None,
+        power_gamma=gamma,
+    )
+    assert config.schedule is EMASchedule.POWER
+    assert config.decay_at_step(0) == 0.0
+    assert config.decay_at_step(1) == 0.0
+    assert config.decay_at_step(100) == pytest.approx(0.99 ** (gamma + 1))
+    assert config.decay_at_step(10**6) == 0.999
+    with pytest.raises(ValueError, match="exclusive"):
+        _ema(
+            EMADevice.GPU,
+            decay=0.999,
+            every=1,
+            start_step=0,
+            decay_final=0.99,
+            ramp_steps=10,
+            power_gamma=gamma,
+        )
+    with pytest.raises(ValueError, match="positive"):
+        _ema(
+            EMADevice.GPU,
+            decay=0.999,
+            every=1,
+            start_step=0,
+            decay_final=None,
+            ramp_steps=None,
+            power_gamma=0.0,
         )
 
 
 @pytest.mark.parametrize("device", list(EMADevice))
 def test_state_dict_round_trip_restores_shadows_and_count(device: EMADevice) -> None:
     ema = _ema(
-        device, decay=0.9, every=1, start_step=0, decay_final=None, ramp_steps=None
+        device,
+        decay=0.9,
+        every=1,
+        start_step=0,
+        decay_final=None,
+        ramp_steps=None,
+        power_gamma=None,
     )
     params = _params()
     optimizer = _optimizer(params, ema)
@@ -180,7 +239,13 @@ def test_state_dict_round_trip_restores_shadows_and_count(device: EMADevice) -> 
 @pytest.mark.parametrize("device", list(EMADevice))
 def test_swap_and_restore(device: EMADevice) -> None:
     ema = _ema(
-        device, decay=0.5, every=1, start_step=0, decay_final=None, ramp_steps=None
+        device,
+        decay=0.5,
+        every=1,
+        start_step=0,
+        decay_final=None,
+        ramp_steps=None,
+        power_gamma=None,
     )
     params = _params()
     optimizer = _optimizer(params, ema)
@@ -207,6 +272,7 @@ def test_constant_parameter_keeps_a_bit_exact_shadow() -> None:
         start_step=0,
         decay_final=None,
         ramp_steps=None,
+        power_gamma=None,
     )
     params = _params()
     optimizer = _optimizer(params, ema)
@@ -231,6 +297,7 @@ def test_swap_guards_and_parameters_without_gradients() -> None:
         start_step=0,
         decay_final=None,
         ramp_steps=None,
+        power_gamma=None,
     )
     params = _params()
     optimizer = _optimizer(params, ema)
@@ -258,6 +325,7 @@ def test_swap_scoped_to_a_model_rejects_foreign_trainable_parameters() -> None:
         start_step=0,
         decay_final=None,
         ramp_steps=None,
+        power_gamma=None,
     )
     params = _params()
     optimizer = _optimizer(params, ema)
@@ -279,6 +347,7 @@ def test_cpu_working_buffers_are_not_saved() -> None:
         start_step=0,
         decay_final=None,
         ramp_steps=None,
+        power_gamma=None,
     )
     params = _params()
     optimizer = _optimizer(params, ema)
@@ -303,7 +372,13 @@ def test_checkpoints_move_between_gpu_and_cpu_shadows(
     """
     configs = {
         device: _ema(
-            device, decay=0.8, every=1, start_step=0, decay_final=None, ramp_steps=None
+            device,
+            decay=0.8,
+            every=1,
+            start_step=0,
+            decay_final=None,
+            ramp_steps=None,
+            power_gamma=None,
         )
         for device in EMADevice
     }
@@ -344,7 +419,13 @@ def test_checkpoints_move_between_gpu_and_cpu_shadows(
 def test_decay_ramp_drives_the_shadow_updates() -> None:
     """Each update uses the ramped decay of its step."""
     ema = _ema(
-        EMADevice.GPU, decay=0.5, every=1, start_step=0, decay_final=0.9, ramp_steps=4
+        EMADevice.GPU,
+        decay=0.5,
+        every=1,
+        start_step=0,
+        decay_final=0.9,
+        ramp_steps=4,
+        power_gamma=None,
     )
     params = _params()
     optimizer = _optimizer(params, ema)
@@ -381,7 +462,13 @@ def test_mixin_tracks_bfloat16_parameters_of_a_stock_optimizer(
     This exercises the EMA's generic non-float32 paths.
     """
     ema = _ema(
-        device, decay=0.7, every=1, start_step=0, decay_final=None, ramp_steps=None
+        device,
+        decay=0.7,
+        every=1,
+        start_step=0,
+        decay_final=None,
+        ramp_steps=None,
+        power_gamma=None,
     )
     torch.manual_seed(0)
     params = [nn.Parameter(torch.randn(64, 32, device="cuda", dtype=torch.bfloat16))]

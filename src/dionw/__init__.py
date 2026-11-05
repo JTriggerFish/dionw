@@ -21,7 +21,7 @@ from dionw._keys import (
     ROUTE_KEY,
     ROW_NORMALIZATION_KEY,
 )
-from dionw.ema import EMAConfig, EMADevice, IntegratedEMAOptimizer
+from dionw.ema import EMAConfig, EMADevice, EMASchedule, IntegratedEMAOptimizer
 from dionw.matrix_update import (
     DION3_UPDATE,
     MUON_UPDATE,
@@ -47,6 +47,7 @@ __all__ = [
     "Dion",
     "EMAConfig",
     "EMADevice",
+    "EMASchedule",
     "IntegratedEMAOptimizer",
     "MatrixUpdate",
     "MomentumForm",

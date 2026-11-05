@@ -22,7 +22,13 @@ Use ``IntegratedEMAOptimizer`` as a mixin before a concrete optimizer
 """
 
 from dionw.ema._keys import EMA_STEP_COUNT_KEY
-from dionw.ema.config import EMAConfig, EMADevice, ProfileRegion, no_profile
+from dionw.ema.config import (
+    EMAConfig,
+    EMADevice,
+    EMASchedule,
+    ProfileRegion,
+    no_profile,
+)
 from dionw.ema.mixin import IntegratedEMAOptimizer
 from dionw.ema.tracker import OptimizerIntegratedEMA
 
@@ -30,6 +36,7 @@ __all__ = [
     "EMA_STEP_COUNT_KEY",
     "EMAConfig",
     "EMADevice",
+    "EMASchedule",
     "IntegratedEMAOptimizer",
     "OptimizerIntegratedEMA",
     "ProfileRegion",
